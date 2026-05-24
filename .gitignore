@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+outputs/
+_vizdoom.ini
+*.pt
+.ruff_cache/

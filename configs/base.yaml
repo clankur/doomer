@@ -1,0 +1,19 @@
+env:
+  scenario: "VizdoomBasic-v1"
+  frame_skip: 4
+  frame_stack: 4
+  resolution: 84
+  max_episode_steps: 300
+
+training:
+  algorithm: "reinforce"
+  learning_rate: 1.e-4
+  gamma: 0.99
+  max_episodes: 5000
+  log_interval: 10
+  checkpoint_interval: 500
+  seed: 42
+
+paths:
+  root_working_dir: "/tmp"
+  model_name: "default"
