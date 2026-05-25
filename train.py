@@ -138,13 +138,19 @@ def compute_returns(rewards: list[float], gamma: float) -> torch.Tensor:
     G = 0.0
     for r in reversed(rewards):
         G = r + gamma * G
-        returns.insert(0, G)
+        returns.append(G)
+    returns.reverse()
     return torch.tensor(returns)
 
 
 def loss(log_probs: list[torch.Tensor], returns: torch.Tensor) -> torch.Tensor:
     """REINFORCE policy gradient with mean-return baseline."""
     # Subtracting mean return as baseline reduces variance without introducing bias
+
+    # note: in my own literature, reccomendations for updating REINFORCE was to
+    #   use critic network for baseline centering (no std normalization)
+    #   GAE/TD error to estimate advantage
+
     advantages = returns - returns.mean()
     if advantages.std() > 1e-8:
         advantages = advantages / advantages.std()
