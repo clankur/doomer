@@ -64,3 +64,25 @@ Model, loss, optimizer, training loop, and Hydra entrypoint all live in `train.p
 ### Config dataclasses
 
 Use `@dataclass(frozen=True)` for all config/hparam records. Hydra loads YAML → `DictConfig`, then `build_config()` converts to typed dataclasses.
+
+### Type annotations
+
+All functions must have full type signatures — arguments and return types. Use dataclasses (e.g. `EpisodeResult`, `StepMetrics`) to bundle related return values instead of returning bare tuples. Annotate local variables where the type isn't obvious from the RHS.
+
+### Einops for shape transforms
+
+Use `einops.rearrange` instead of `.reshape`, `.unsqueeze`, `.squeeze`, `.permute`, `.view`. The pattern string documents what dimensions mean:
+
+```python
+# Good — dimensions are named and the transform is self-documenting
+rearrange(obs, "frames h w -> 1 frames h w")
+rearrange(x, "batch channels h w -> batch (channels h w)")
+einsum(q, k, "batch heads seq_q dim, batch heads seq_k dim -> batch heads seq_q seq_k")
+
+# Bad — opaque, reader must infer what dim 0 is
+obs.unsqueeze(0)
+x.reshape(x.size(0), -1)
+torch.einsum("bhqd,bhkd->bhqk", q, k)
+```
+
+Prefer `einops.einsum` over `torch.einsum` — named dimensions read as documentation. Annotate intermediate shapes with inline comments where the tensor flows through multiple operations (e.g. after conv layers, after projections).
