@@ -9,7 +9,6 @@ env:
   max_episode_steps: 100
 
 training:
-  algorithm: "reinforce"
   learning_rate: 3.e-4
   max_episodes: 50
   log_interval: 5

@@ -10,6 +10,7 @@ dependencies = [
     "hydra-core>=1.3",
     "opencv-python-headless",
     "numpy>=1.24",
+    "einops",
 ]
 
 [project.optional-dependencies]
