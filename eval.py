@@ -14,7 +14,7 @@ from einops import rearrange
 from omegaconf import DictConfig
 
 from doom_env import EnvConfig, ExtractScreen, NormalizePixels
-from train import PolicyNetwork, build_config
+from train import ActorCriticNetwork, build_config
 
 
 def make_render_env(config: EnvConfig) -> gymnasium.Env:
@@ -40,7 +40,7 @@ def main(cfg: DictConfig) -> None:
     env = make_render_env(config.env)
     num_actions = env.action_space.n
 
-    policy = PolicyNetwork(
+    policy = ActorCriticNetwork(
         frame_stack=config.env.frame_stack,
         num_actions=num_actions,
         resolution=config.env.resolution,
@@ -49,7 +49,7 @@ def main(cfg: DictConfig) -> None:
     checkpoint_path = cfg.get("checkpoint", None)
     if checkpoint_path:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-        policy.load_state_dict(checkpoint["policy"])
+        policy.load_state_dict(checkpoint["model"])
         print(f"Loaded checkpoint: {checkpoint_path}")
     else:
         print("No checkpoint provided — running with random policy")
@@ -65,7 +65,7 @@ def main(cfg: DictConfig) -> None:
         while not done:
             obs_t = rearrange(torch.from_numpy(np.array(obs)), "frames h w -> 1 frames h w")
             with torch.no_grad():
-                dist = policy(obs_t)
+                dist, _value = policy(obs_t)
             action = dist.sample()
 
             obs, reward, terminated, truncated, _ = env.step(action.item())
