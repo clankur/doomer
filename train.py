@@ -234,9 +234,7 @@ def train(config: Config) -> None:
         step_loss.backward()
         optimizer.step()
 
-        running_reward = (
-            result.episode_return if episode == 0 else 0.05 * result.episode_return + 0.95 * running_reward
-        )
+        running_reward = result.episode_return if episode == 0 else 0.05 * result.episode_return + 0.95 * running_reward
 
         metrics = StepMetrics(
             episode=episode,
@@ -293,9 +291,12 @@ def train(config: Config) -> None:
 
 @hydra.main(config_path="configs", version_base=None)
 def main(cfg: DictConfig) -> None:
+    from hydra.core.hydra_config import HydraConfig
+
     config = build_config(cfg)
+    hydra_overrides = [o.split("=")[0].lstrip("+") for o in HydraConfig.get().overrides.task]
     task = runq.Task(project="doomer", name=config.paths.model_name)
-    task.execute_remotely(queue="gpu", config=OmegaConf.to_yaml(cfg))
+    task.execute_remotely(queue="gpu", config=OmegaConf.to_yaml(cfg), overrides=hydra_overrides)
     train(config)
 
 
