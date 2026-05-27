@@ -1085,7 +1085,7 @@ wheels = [
 [[package]]
 name = "runq"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/clankur/runq.git#b8345272c4252b67a1da84a4aba50594cd6abce5" }
+source = { git = "ssh://git@github.com/clankur/runq.git#0c70c0e64d21d6f9275ad79c9d08a7c0efe962c9" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
