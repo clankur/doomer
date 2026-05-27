@@ -31,7 +31,37 @@ For GPU use `uv sync --extra gpu`.
 ### Local CPU smoke test
 
 ```
-uv run python -m train --config-name=local_test +paths.model_name=smoke_000
+RUNQ_EXPERIMENT_ID=local uv run python -m train --config-name=local_test ++paths.model_name=smoke_000
+```
+
+`RUNQ_EXPERIMENT_ID` tells `execute_remotely()` it's already on a worker, so training runs locally instead of submitting to the queue.
+
+### Run on remote GPU (fractal)
+
+```
+uv run python -m train --config-name=local_test ++paths.model_name=my_experiment
+```
+
+Without `RUNQ_EXPERIMENT_ID`, this auto-captures the git context (repo, branch, commit, uncommitted diff), submits to the runq queue, and exits. The worker on fractal clones the repo, checks out the commit, applies the diff, runs `uv sync --extra gpu`, and trains.
+
+Requires `RUNQ_SERVER` in your shell (`~/.zshrc`):
+
+```
+export RUNQ_SERVER="http://192.168.4.85:8080"
+```
+
+### Monitor experiments
+
+- **Dashboard**: http://192.168.4.85:8080
+- **WandB**: https://wandb.ai/clankur-personal/doomer
+- **CLI**: `runq list`, `runq logs -f <id>`, `runq cancel <id>`
+
+### Hydra overrides
+
+Override any config value with `++key=value`:
+
+```
+uv run python -m train --config-name=local_test ++paths.model_name=ppo_lr3e4 ++training.learning_rate=3e-4
 ```
 
 Each file in `configs/` lists its own intended launch command at the top — copy from there for real runs. `paths.model_name` controls the checkpoint subdirectory under `paths.root_working_dir` (default `/tmp`); change it per run.
@@ -51,7 +81,7 @@ There is no test suite. The local test config above is the smoke test.
 
 ## Architecture
 
-- `train.py` — Network architecture, algorithm (REINFORCE/PPO/GRPO), training loop, Hydra entrypoint. The whole training step should be readable linearly in this file.
+- `train.py` — Network architecture, algorithm (REINFORCE/PPO/GRPO), training loop, wandb logging, runq remote execution, Hydra entrypoint. The whole training step should be readable linearly in this file.
 - `doom_env.py` — ViZDoom Gymnasium wrapper with preprocessing (grayscale, resize, normalize, frame stack). Provides `make_env` and `make_vec_env` factories.
 - `configs/` — Hydra YAML configs. `base.yaml` is the schema; other configs inherit from it.
 
@@ -86,3 +116,9 @@ torch.einsum("bhqd,bhkd->bhqk", q, k)
 ```
 
 Prefer `einops.einsum` over `torch.einsum` — named dimensions read as documentation. Annotate intermediate shapes with inline comments where the tensor flows through multiple operations (e.g. after conv layers, after projections).
+
+## Remote infrastructure
+
+- **runq** — Self-hosted experiment queue at https://github.com/clankur/runq. Server runs on fractal (192.168.4.85:8080) as a systemd user service.
+- **fractal** — GPU box (RTX 4090, Ubuntu 22.04, driver 570, CUDA 12.8). SSH alias `fractal`, user `clankur`.
+- **wandb** — Metrics logged to `clankur-personal/doomer` project. Auth via `~/.netrc` on both laptop and fractal.

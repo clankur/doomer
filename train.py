@@ -17,10 +17,10 @@ import runq
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
 from einops import rearrange
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
+import wandb
 from doom_env import EnvConfig, make_env
 
 # ─── Config dataclasses ─────────────────────────────────────────────────────
@@ -298,7 +298,7 @@ def train(config: Config) -> None:
 def main(cfg: DictConfig) -> None:
     config = build_config(cfg)
     task = runq.Task(project="doomer", name=config.paths.model_name)
-    task.execute_remotely(queue="gpu")
+    task.execute_remotely(queue="gpu", config=OmegaConf.to_yaml(cfg))
     train(config)
 
 
