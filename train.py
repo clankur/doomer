@@ -394,6 +394,9 @@ def train(config: Config) -> None:
                     "running_reward": metrics.running_reward,
                     "episode_length": metrics.episode_length,
                     "loss": metrics.loss,
+                    "policy_loss": metrics.policy_loss,
+                    "value_loss": metrics.value_loss,
+                    "entropy": metrics.entropy,
                 },
                 step=metrics.episode,
             )

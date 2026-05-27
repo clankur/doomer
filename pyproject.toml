@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 cpu = ["torch"]
 gpu = ["torch"]
+wandb = ["wandb"]
 
 [tool.uv]
 conflicts = [
