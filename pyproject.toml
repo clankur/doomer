@@ -17,6 +17,7 @@ dependencies = [
 cpu = ["torch"]
 gpu = ["torch"]
 wandb = ["wandb"]
+remote = ["runq"]
 
 [tool.uv]
 conflicts = [

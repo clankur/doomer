@@ -22,6 +22,11 @@ from omegaconf import DictConfig
 from doom_env import EnvConfig, make_env
 
 try:
+    import runq
+except ImportError:
+    runq = None
+
+try:
     import wandb
 except ImportError:
     wandb = None
@@ -303,6 +308,9 @@ def train(config: Config) -> None:
 @hydra.main(config_path="configs", version_base=None)
 def main(cfg: DictConfig) -> None:
     config = build_config(cfg)
+    if runq is not None:
+        task = runq.Task(project="doomer", name=config.paths.model_name)
+        task.execute_remotely(queue="gpu")
     train(config)
 
 
