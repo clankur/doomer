@@ -288,7 +288,7 @@ requires-dist = [
     { name = "hydra-core", specifier = ">=1.3" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "opencv-python-headless" },
-    { name = "runq", git = "https://github.com/clankur/runq.git" },
+    { name = "runq", git = "ssh://git@github.com/clankur/runq.git" },
     { name = "torch", marker = "extra == 'cpu'", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "doomer", extra = "cpu" } },
     { name = "torch", marker = "extra == 'gpu'", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "doomer", extra = "gpu" } },
     { name = "vizdoom", specifier = ">=1.2.4" },
@@ -1085,7 +1085,7 @@ wheels = [
 [[package]]
 name = "runq"
 version = "0.1.0"
-source = { git = "https://github.com/clankur/runq.git#0a6325419219dfc9c86e9f6952230253e7bd0653" }
+source = { git = "ssh://git@github.com/clankur/runq.git#b8345272c4252b67a1da84a4aba50594cd6abce5" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },

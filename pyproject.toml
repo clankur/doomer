@@ -32,7 +32,7 @@ torch = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu128", extra = "gpu" },
 ]
-runq = { git = "https://github.com/clankur/runq.git" }
+runq = { git = "ssh://git@github.com/clankur/runq.git" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
