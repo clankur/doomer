@@ -7,6 +7,7 @@ Usage:
 import json
 import os
 import time
+import urllib.request
 from dataclasses import asdict, dataclass
 
 import gymnasium
@@ -19,6 +20,11 @@ from einops import rearrange
 from omegaconf import DictConfig
 
 from doom_env import EnvConfig, make_env
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 # ─── Config dataclasses ─────────────────────────────────────────────────────
 
@@ -173,6 +179,25 @@ class StepMetrics:
     elapsed_sec: float
 
 
+def _report_wandb_url_to_runq(wandb_url: str) -> None:
+    """If running inside runq, report the wandb URL back via the PATCH API."""
+    runq_server = os.environ.get("RUNQ_SERVER")
+    experiment_id = os.environ.get("RUNQ_EXPERIMENT_ID")
+    if not runq_server or not experiment_id:
+        return
+    try:
+        data = json.dumps({"wandb_url": wandb_url}).encode()
+        req = urllib.request.Request(
+            f"{runq_server}/api/experiments/{experiment_id}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="PATCH",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
 def train(config: Config) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(config.training.seed)
@@ -194,6 +219,10 @@ def train(config: Config) -> None:
     # Save config for reproducibility
     with open(os.path.join(model_dir, "config.json"), "w") as f:
         json.dump(asdict(config), f, indent=2)
+
+    if wandb is not None:
+        wandb.init(project="doomer", name=config.paths.model_name, config=asdict(config))
+        _report_wandb_url_to_runq(wandb.run.get_url())
 
     metrics_log: list[StepMetrics] = []
     running_reward: float = 0.0
@@ -232,6 +261,19 @@ def train(config: Config) -> None:
                 f"loss={metrics.loss:>8.4f}  "
                 f"t={metrics.elapsed_sec:>6.1f}s"
             )
+            if wandb is not None:
+                wandb.log(
+                    {
+                        "episode_return": metrics.episode_return,
+                        "running_reward": metrics.running_reward,
+                        "episode_length": metrics.episode_length,
+                        "loss": metrics.loss,
+                        "policy_loss": metrics.policy_loss,
+                        "value_loss": metrics.value_loss,
+                        "entropy": metrics.entropy,
+                    },
+                    step=metrics.episode,
+                )
 
         if (
             config.training.checkpoint_interval > 0
@@ -249,6 +291,8 @@ def train(config: Config) -> None:
             f.write(json.dumps(asdict(m)) + "\n")
 
     env.close()
+    if wandb is not None:
+        wandb.finish()
     print(f"Training complete. Final running reward: {running_reward:.1f}")
     print(f"Metrics saved to {metrics_path}")
 

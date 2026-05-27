@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 cpu = ["torch"]
 gpu = ["torch"]
+wandb = ["wandb"]
 
 [tool.uv]
 conflicts = [
@@ -26,7 +27,9 @@ conflicts = [
 ]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
