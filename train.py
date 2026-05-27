@@ -40,6 +40,7 @@ class TrainingHparams:
     gae_lambda: float = 0.95
     ppo_epochs: int = 4
     minibatch_size: int = 64
+    max_grad_norm: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -305,6 +306,8 @@ def train(config: Config) -> None:
 
         if advantages.std() > 1e-8:
             advantages = (advantages - advantages.mean()) / advantages.std()
+        if returns.std() > 1e-8:
+            returns = (returns - returns.mean()) / returns.std()
 
         obs_device = rollout.observations.to(device)  # (T, frames, H, W)
         actions_device = rollout.actions.to(device)  # (T,)
@@ -347,6 +350,7 @@ def train(config: Config) -> None:
 
                 optimizer.zero_grad()
                 total.backward()
+                nn.utils.clip_grad_norm_(policy.parameters(), config.training.max_grad_norm)
                 optimizer.step()
 
                 epoch_total.append(total.item())
@@ -409,6 +413,10 @@ def train(config: Config) -> None:
             path = os.path.join(model_dir, f"checkpoint_{episode}.pt")
             torch.save({"model": policy.state_dict(), "optimizer": optimizer.state_dict(), "episode": episode}, path)
             print(f"  → saved {path}")
+
+    final_path = os.path.join(model_dir, "checkpoint_final.pt")
+    torch.save({"model": policy.state_dict(), "optimizer": optimizer.state_dict(), "episode": episode}, final_path)
+    print(f"  → saved {final_path}")
 
     metrics_path = os.path.join(model_dir, "metrics.jsonl")
     with open(metrics_path, "w") as f:

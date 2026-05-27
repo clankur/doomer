@@ -1,4 +1,6 @@
-# uv run python -m train --config-name=gpu_4090 ++paths.model_name=reinforce_001
+# Base config for PPO hyperparameter sweep runs.
+# Training hparams are overridden per-run by sweep.py.
+# uv run python sweep.py
 defaults:
   - base
   - _self_
@@ -11,10 +13,7 @@ env:
   max_episode_steps: 300
 
 training:
-  learning_rate: 5.e-4
-  gamma: 0.99
-  max_episodes: 10000
-  log_interval: 25
+  max_episodes: 5000
+  log_interval: 10
   checkpoint_interval: 1000
   seed: 42
-  entropy_coeff: 0.02

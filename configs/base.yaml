@@ -18,6 +18,7 @@ training:
   gae_lambda: 0.95
   ppo_epochs: 4
   minibatch_size: 64
+  max_grad_norm: 0.5
 
 paths:
   root_working_dir: "/tmp"
