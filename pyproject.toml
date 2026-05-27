@@ -31,6 +31,7 @@ conflicts = [
 torch = [
     { index = "pytorch-cpu", extra = "cpu" },
 ]
+runq = { git = "https://github.com/clankur/runq.git" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
