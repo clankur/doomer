@@ -17,10 +17,10 @@ import runq
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 from einops import rearrange
 from omegaconf import DictConfig, OmegaConf
 
-import wandb
 from doom_env import EnvConfig, make_env
 
 # ─── Config dataclasses ─────────────────────────────────────────────────────
