@@ -9,10 +9,10 @@ import gymnasium
 import hydra
 import numpy as np
 import torch
+import vizdoom.gymnasium_wrapper  # noqa: F401
 from einops import rearrange
 from omegaconf import DictConfig
 
-import vizdoom.gymnasium_wrapper  # noqa: F401
 from doom_env import EnvConfig, ExtractScreen, NormalizePixels
 from train import PolicyNetwork, build_config
 
