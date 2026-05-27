@@ -11,13 +11,13 @@ dependencies = [
     "opencv-python-headless",
     "numpy>=1.24",
     "einops",
+    "wandb",
+    "runq",
 ]
 
 [project.optional-dependencies]
 cpu = ["torch"]
 gpu = ["torch"]
-wandb = ["wandb"]
-remote = ["runq"]
 
 [tool.uv]
 conflicts = [

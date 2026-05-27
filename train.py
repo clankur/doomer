@@ -13,23 +13,15 @@ from dataclasses import asdict, dataclass
 import gymnasium
 import hydra
 import numpy as np
+import runq
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 from einops import rearrange
 from omegaconf import DictConfig
 
 from doom_env import EnvConfig, make_env
-
-try:
-    import runq
-except ImportError:
-    runq = None
-
-try:
-    import wandb
-except ImportError:
-    wandb = None
 
 # ─── Config dataclasses ─────────────────────────────────────────────────────
 
@@ -225,9 +217,8 @@ def train(config: Config) -> None:
     with open(os.path.join(model_dir, "config.json"), "w") as f:
         json.dump(asdict(config), f, indent=2)
 
-    if wandb is not None:
-        wandb.init(project="doomer", name=config.paths.model_name, config=asdict(config))
-        _report_wandb_url_to_runq(wandb.run.get_url())
+    wandb.init(project="doomer", name=config.paths.model_name, config=asdict(config))
+    _report_wandb_url_to_runq(wandb.run.get_url())
 
     metrics_log: list[StepMetrics] = []
     running_reward: float = 0.0
@@ -266,19 +257,18 @@ def train(config: Config) -> None:
                 f"loss={metrics.loss:>8.4f}  "
                 f"t={metrics.elapsed_sec:>6.1f}s"
             )
-            if wandb is not None:
-                wandb.log(
-                    {
-                        "episode_return": metrics.episode_return,
-                        "running_reward": metrics.running_reward,
-                        "episode_length": metrics.episode_length,
-                        "loss": metrics.loss,
-                        "policy_loss": metrics.policy_loss,
-                        "value_loss": metrics.value_loss,
-                        "entropy": metrics.entropy,
-                    },
-                    step=metrics.episode,
-                )
+            wandb.log(
+                {
+                    "episode_return": metrics.episode_return,
+                    "running_reward": metrics.running_reward,
+                    "episode_length": metrics.episode_length,
+                    "loss": metrics.loss,
+                    "policy_loss": metrics.policy_loss,
+                    "value_loss": metrics.value_loss,
+                    "entropy": metrics.entropy,
+                },
+                step=metrics.episode,
+            )
 
         if (
             config.training.checkpoint_interval > 0
@@ -296,8 +286,7 @@ def train(config: Config) -> None:
             f.write(json.dumps(asdict(m)) + "\n")
 
     env.close()
-    if wandb is not None:
-        wandb.finish()
+    wandb.finish()
     print(f"Training complete. Final running reward: {running_reward:.1f}")
     print(f"Metrics saved to {metrics_path}")
 
@@ -308,9 +297,8 @@ def train(config: Config) -> None:
 @hydra.main(config_path="configs", version_base=None)
 def main(cfg: DictConfig) -> None:
     config = build_config(cfg)
-    if runq is not None:
-        task = runq.Task(project="doomer", name=config.paths.model_name)
-        task.execute_remotely(queue="gpu")
+    task = runq.Task(project="doomer", name=config.paths.model_name)
+    task.execute_remotely(queue="gpu")
     train(config)
 
 
