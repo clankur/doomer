@@ -359,7 +359,8 @@ def train(config: Config) -> None:
                 f"max={metrics.group_max_return:>5.1f}  "
                 f"loss={metrics.loss:>8.4f}  "
                 f"entropy={metrics.entropy:>6.4f}  "
-                f"t={metrics.elapsed_sec:>6.1f}s"
+                f"t={metrics.elapsed_sec:>6.1f}s",
+                flush=True,
             )
             wandb.log(
                 {
@@ -383,11 +384,11 @@ def train(config: Config) -> None:
         ):
             path = os.path.join(model_dir, f"checkpoint_{group_idx}.pt")
             torch.save({"model": policy.state_dict(), "optimizer": optimizer.state_dict(), "group": group_idx}, path)
-            print(f"  → saved {path}")
+            print(f"  → saved {path}", flush=True)
 
     final_path = os.path.join(model_dir, "checkpoint_final.pt")
     torch.save({"model": policy.state_dict(), "optimizer": optimizer.state_dict(), "group": group_idx}, final_path)
-    print(f"  → saved {final_path}")
+    print(f"  → saved {final_path}", flush=True)
 
     metrics_path = os.path.join(model_dir, "metrics.jsonl")
     with open(metrics_path, "w") as f:
