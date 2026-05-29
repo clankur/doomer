@@ -17,10 +17,10 @@ import runq
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 from einops import rearrange
 from omegaconf import DictConfig, OmegaConf
 
-import wandb
 from doom_env import EnvConfig, make_env
 
 # ─── Config dataclasses ─────────────────────────────────────────────────────
@@ -109,6 +109,7 @@ class EpisodeData:
     observations: torch.Tensor  # (T, frames, H, W)
     actions: torch.Tensor  # (T,)
     old_log_probs: torch.Tensor  # (T,)
+    rewards: list[float]
     episode_return: float
     length: int
 
@@ -130,6 +131,7 @@ def collect_episode(env: gymnasium.Env, policy: PolicyNetwork, device: torch.dev
     obs_list: list[np.ndarray] = []
     action_list: list[int] = []
     log_prob_list: list[torch.Tensor] = []
+    reward_list: list[float] = []
     reward_total: float = 0.0
     terminated = False
     truncated = False
@@ -148,6 +150,7 @@ def collect_episode(env: gymnasium.Env, policy: PolicyNetwork, device: torch.dev
 
         action_list.append(action.item())
         log_prob_list.append(log_prob.cpu())
+        reward_list.append(float(reward))
         reward_total += float(reward)
 
     observations = torch.stack([torch.from_numpy(o) for o in obs_list])  # (T, frames, H, W)
@@ -158,9 +161,21 @@ def collect_episode(env: gymnasium.Env, policy: PolicyNetwork, device: torch.dev
         observations=observations,
         actions=actions,
         old_log_probs=old_log_probs,
+        rewards=reward_list,
         episode_return=reward_total,
         length=len(action_list),
     )
+
+
+def compute_returns_to_go(rewards: list[float], gamma: float) -> torch.Tensor:
+    """Discounted return-to-go for each timestep: G_t = r_t + gamma*r_{t+1} + ..."""
+    T = len(rewards)
+    rtg = torch.zeros(T)
+    running = 0.0
+    for t in reversed(range(T)):
+        running = rewards[t] + gamma * running
+        rtg[t] = running
+    return rtg
 
 
 def collect_group(
@@ -168,17 +183,19 @@ def collect_group(
     policy: PolicyNetwork,
     device: torch.device,
     group_size: int,
+    gamma: float,
 ) -> GroupData:
-    """Collect a group of episodes and compute group-relative advantages."""
+    """Collect a group of episodes and compute group-relative advantages via return-to-go."""
     episodes = [collect_episode(env, policy, device) for _ in range(group_size)]
 
-    returns = torch.tensor([ep.episode_return for ep in episodes])
-    group_mean = returns.mean().item()
-    group_std = returns.std().item()
+    all_rtg: list[torch.Tensor] = []
+    for ep in episodes:
+        all_rtg.append(compute_returns_to_go(ep.rewards, gamma))
 
-    advantages = torch.cat(
-        [torch.full((ep.length,), (ep.episode_return - group_mean) / (group_std + 1e-8)) for ep in episodes]
-    )
+    rtg_all = torch.cat(all_rtg)
+    rtg_mean = rtg_all.mean()
+    rtg_std = rtg_all.std()
+    advantages = (rtg_all - rtg_mean) / (rtg_std + 1e-8)
 
     return GroupData(
         observations=torch.cat([ep.observations for ep in episodes]),
@@ -283,7 +300,7 @@ def train(config: Config) -> None:
     num_groups = config.training.max_episodes // config.training.group_size
 
     for group_idx in range(num_groups):
-        group = collect_group(env, policy, device, config.training.group_size)
+        group = collect_group(env, policy, device, config.training.group_size, config.training.gamma)
         total_episodes += config.training.group_size
 
         obs_device = group.observations.to(device)  # (total_T, frames, H, W)
