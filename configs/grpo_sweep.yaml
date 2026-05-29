@@ -11,6 +11,7 @@ env:
   frame_stack: 4
   resolution: 84
   max_episode_steps: 300
+  dense_reward: true
 
 training:
   max_episodes: 5000
