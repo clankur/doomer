@@ -14,7 +14,7 @@ from einops import rearrange
 from omegaconf import DictConfig
 
 from doom_env import EnvConfig, ExtractScreen, NormalizePixels
-from train import ActorCriticNetwork, build_config
+from train import PolicyNetwork, build_config
 
 
 def make_render_env(config: EnvConfig) -> gymnasium.Env:
@@ -40,7 +40,7 @@ def main(cfg: DictConfig) -> None:
     env = make_render_env(config.env)
     num_actions = env.action_space.n
 
-    policy = ActorCriticNetwork(
+    policy = PolicyNetwork(
         frame_stack=config.env.frame_stack,
         num_actions=num_actions,
         resolution=config.env.resolution,
@@ -65,7 +65,7 @@ def main(cfg: DictConfig) -> None:
         while not done:
             obs_t = rearrange(torch.from_numpy(np.array(obs)), "frames h w -> 1 frames h w")
             with torch.no_grad():
-                dist, _value = policy(obs_t)
+                dist = policy(obs_t)
             action = dist.sample()
 
             obs, reward, terminated, truncated, _ = env.step(action.item())

@@ -1,4 +1,4 @@
-# Base config for PPO hyperparameter sweep runs.
+# Base config for GRPO hyperparameter sweep runs.
 # Training hparams are overridden per-run by sweep.py.
 # uv run python sweep.py
 defaults:

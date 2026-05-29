@@ -1,4 +1,4 @@
-"""Doom RL training: actor-critic network, PPO with GAE, Hydra entrypoint.
+"""Doom RL training: policy network, GRPO with group-relative advantages, Hydra entrypoint.
 
 Usage:
     uv run python -m train --config-name=local_test ++paths.model_name=smoke_000
@@ -35,12 +35,11 @@ class TrainingHparams:
     checkpoint_interval: int = 500
     seed: int = 42
     clip_epsilon: float = 0.2
-    value_loss_coeff: float = 0.5
     entropy_coeff: float = 0.01
-    gae_lambda: float = 0.95
-    ppo_epochs: int = 4
+    update_epochs: int = 4
     minibatch_size: int = 64
     max_grad_norm: float = 0.5
+    group_size: int = 8
 
 
 @dataclass(frozen=True)
@@ -67,11 +66,11 @@ def build_config(cfg: DictConfig) -> Config:
 # ─── Network ────────────────────────────────────────────────────────────────
 
 
-class ActorCriticNetwork(nn.Module):
-    """Nature DQN CNN backbone + policy and value heads.
+class PolicyNetwork(nn.Module):
+    """Nature DQN CNN backbone + policy head.
 
     Input: (B, frame_stack, H, W) float32 in [0, 1]
-    Output: (Categorical distribution over actions, value estimates)
+    Output: Categorical distribution over actions
     """
 
     def __init__(self, frame_stack: int, num_actions: int, resolution: int = 84):
@@ -87,7 +86,6 @@ class ActorCriticNetwork(nn.Module):
 
         self.fc = nn.Linear(conv_flat, 512)
         self.policy_head = nn.Linear(512, num_actions)
-        self.value_head = nn.Linear(512, 1)
 
     def _conv_forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.relu(self.conv1(x))
@@ -95,40 +93,44 @@ class ActorCriticNetwork(nn.Module):
         x = F.relu(self.conv3(x))
         return x
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.distributions.Categorical, torch.Tensor]:
-        # x: (batch, frames, h, w)
+    def forward(self, x: torch.Tensor) -> torch.distributions.Categorical:
         x = self._conv_forward(x)  # -> (batch, channels, h', w')
         x = rearrange(x, "batch channels h w -> batch (channels h w)")
         x = F.relu(self.fc(x))  # -> (batch, hidden)
         logits = self.policy_head(x)  # -> (batch, actions)
-        value = self.value_head(x)  # -> (batch, 1)
-        value = rearrange(value, "batch 1 -> batch")
-        return torch.distributions.Categorical(logits=logits), value
+        return torch.distributions.Categorical(logits=logits)
 
 
-# ─── Rollout collection & PPO loss ─────────────────────────────────────────
+# ─── Episode collection & GRPO loss ─────────────────────────────────────────
 
 
 @dataclass
-class RolloutData:
+class EpisodeData:
     observations: torch.Tensor  # (T, frames, H, W)
     actions: torch.Tensor  # (T,)
     old_log_probs: torch.Tensor  # (T,)
-    rewards: list[float]
-    values: torch.Tensor  # (T,)
-    last_value: float
     episode_return: float
     length: int
 
 
-def collect_rollout(env: gymnasium.Env, policy: ActorCriticNetwork, device: torch.device) -> RolloutData:
-    """Roll out one full episode, collecting everything PPO needs."""
+@dataclass
+class GroupData:
+    observations: torch.Tensor  # (total_T, frames, H, W)
+    actions: torch.Tensor  # (total_T,)
+    old_log_probs: torch.Tensor  # (total_T,)
+    advantages: torch.Tensor  # (total_T,)
+    episode_returns: list[float]
+    episode_lengths: list[int]
+    total_timesteps: int
+
+
+def collect_episode(env: gymnasium.Env, policy: PolicyNetwork, device: torch.device) -> EpisodeData:
+    """Roll out one full episode under the current policy."""
     obs, _ = env.reset()
     obs_list: list[np.ndarray] = []
     action_list: list[int] = []
     log_prob_list: list[torch.Tensor] = []
-    reward_list: list[float] = []
-    value_list: list[torch.Tensor] = []
+    reward_total: float = 0.0
     terminated = False
     truncated = False
 
@@ -138,7 +140,7 @@ def collect_rollout(env: gymnasium.Env, policy: ActorCriticNetwork, device: torc
 
         obs_t = rearrange(torch.from_numpy(obs_np), "frames h w -> 1 frames h w").to(device)
         with torch.no_grad():
-            dist, value = policy(obs_t)
+            dist = policy(obs_t)
         action = dist.sample()  # -> (1,)
         log_prob = dist.log_prob(action)  # -> (1,)
 
@@ -146,87 +148,68 @@ def collect_rollout(env: gymnasium.Env, policy: ActorCriticNetwork, device: torc
 
         action_list.append(action.item())
         log_prob_list.append(log_prob.cpu())
-        reward_list.append(float(reward))
-        value_list.append(value.cpu())
-
-    # V(s_T): 0 if truly terminal, critic estimate if truncated
-    if truncated and not terminated:
-        obs_t = rearrange(torch.from_numpy(np.array(obs)), "frames h w -> 1 frames h w").to(device)
-        with torch.no_grad():
-            _, last_val = policy(obs_t)
-        last_value = last_val.item()
-    else:
-        last_value = 0.0
+        reward_total += float(reward)
 
     observations = torch.stack([torch.from_numpy(o) for o in obs_list])  # (T, frames, H, W)
     actions = torch.tensor(action_list, dtype=torch.long)  # (T,)
     old_log_probs = rearrange(torch.stack(log_prob_list), "t 1 -> t")  # (T,)
-    values = rearrange(torch.stack(value_list), "t 1 -> t")  # (T,)
 
-    return RolloutData(
+    return EpisodeData(
         observations=observations,
         actions=actions,
         old_log_probs=old_log_probs,
-        rewards=reward_list,
-        values=values,
-        last_value=last_value,
-        episode_return=sum(reward_list),
-        length=len(reward_list),
+        episode_return=reward_total,
+        length=len(action_list),
     )
 
 
-def compute_gae(
-    rewards: list[float],
-    values: torch.Tensor,
-    last_value: float,
-    gamma: float,
-    gae_lambda: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Generalized Advantage Estimation.
+def collect_group(
+    env: gymnasium.Env,
+    policy: PolicyNetwork,
+    device: torch.device,
+    group_size: int,
+) -> GroupData:
+    """Collect a group of episodes and compute group-relative advantages."""
+    episodes = [collect_episode(env, policy, device) for _ in range(group_size)]
 
-    Returns (advantages, returns) both as (T,) tensors.
-    returns = advantages + values, used as value function targets.
-    """
-    T = len(rewards)
-    advantages = torch.zeros(T)
-    gae = 0.0
+    returns = torch.tensor([ep.episode_return for ep in episodes])
+    group_mean = returns.mean().item()
+    group_std = returns.std().item()
 
-    for t in reversed(range(T)):
-        next_value = last_value if t == T - 1 else values[t + 1].item()
-        delta = rewards[t] + gamma * next_value - values[t].item()
-        gae = delta + gamma * gae_lambda * gae
-        advantages[t] = gae
+    advantages = torch.cat(
+        [torch.full((ep.length,), (ep.episode_return - group_mean) / (group_std + 1e-8)) for ep in episodes]
+    )
 
-    returns = advantages + values.detach()
-    return advantages, returns
+    return GroupData(
+        observations=torch.cat([ep.observations for ep in episodes]),
+        actions=torch.cat([ep.actions for ep in episodes]),
+        old_log_probs=torch.cat([ep.old_log_probs for ep in episodes]),
+        advantages=advantages,
+        episode_returns=[ep.episode_return for ep in episodes],
+        episode_lengths=[ep.length for ep in episodes],
+        total_timesteps=sum(ep.length for ep in episodes),
+    )
 
 
-def ppo_loss(
+def grpo_loss(
     old_log_probs: torch.Tensor,
     new_log_probs: torch.Tensor,
     advantages: torch.Tensor,
-    new_values: torch.Tensor,
-    returns: torch.Tensor,
     entropy: torch.Tensor,
     clip_epsilon: float,
-    value_loss_coeff: float,
     entropy_coeff: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """PPO clipped surrogate objective with value loss and entropy bonus.
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """GRPO clipped surrogate objective with entropy bonus.
 
     All inputs are (MB,) tensors (minibatch).
-    Returns (total_loss, policy_loss, value_loss, entropy) as scalars.
+    Returns (total_loss, policy_loss, entropy) as scalars.
     """
     ratio = torch.exp(new_log_probs - old_log_probs)  # (MB,)
     clipped_ratio = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon)
     policy_loss = -torch.min(ratio * advantages, clipped_ratio * advantages).mean()
-
-    value_loss = F.mse_loss(new_values, returns)
-
-    entropy_val = entropy.mean()
-
-    total_loss = policy_loss + value_loss_coeff * value_loss - entropy_coeff * entropy_val
-    return total_loss, policy_loss, value_loss, entropy_val
+    entropy_mean = entropy.mean()
+    total_loss = policy_loss - entropy_coeff * entropy_mean
+    return total_loss, policy_loss, entropy_mean
 
 
 # ─── Training loop ──────────────────────────────────────────────────────────
@@ -234,13 +217,16 @@ def ppo_loss(
 
 @dataclass
 class StepMetrics:
-    episode: int
-    episode_return: float
+    group: int
+    group_mean_return: float
+    group_std_return: float
+    group_min_return: float
+    group_max_return: float
     running_reward: float
-    episode_length: int
+    mean_episode_length: float
+    total_timesteps: int
     loss: float
     policy_loss: float
-    value_loss: float
     entropy: float
     elapsed_sec: float
 
@@ -271,7 +257,7 @@ def train(config: Config) -> None:
     env = make_env(config.env, seed=config.training.seed)
     num_actions = env.action_space.n
 
-    policy = ActorCriticNetwork(
+    policy = PolicyNetwork(
         frame_stack=config.env.frame_stack,
         num_actions=num_actions,
         resolution=config.env.resolution,
@@ -291,37 +277,26 @@ def train(config: Config) -> None:
 
     metrics_log: list[StepMetrics] = []
     running_reward: float = 0.0
+    total_episodes: int = 0
     t_start = time.time()
 
-    for episode in range(config.training.max_episodes):
-        rollout = collect_rollout(env, policy, device)
+    num_groups = config.training.max_episodes // config.training.group_size
 
-        advantages, returns = compute_gae(
-            rollout.rewards,
-            rollout.values,
-            rollout.last_value,
-            config.training.gamma,
-            config.training.gae_lambda,
-        )
+    for group_idx in range(num_groups):
+        group = collect_group(env, policy, device, config.training.group_size)
+        total_episodes += config.training.group_size
 
-        if advantages.std() > 1e-8:
-            advantages = (advantages - advantages.mean()) / advantages.std()
-        if returns.std() > 1e-8:
-            returns = (returns - returns.mean()) / returns.std()
+        obs_device = group.observations.to(device)  # (total_T, frames, H, W)
+        actions_device = group.actions.to(device)  # (total_T,)
+        old_lp_device = group.old_log_probs.to(device)  # (total_T,)
+        adv_device = group.advantages.to(device)  # (total_T,)
 
-        obs_device = rollout.observations.to(device)  # (T, frames, H, W)
-        actions_device = rollout.actions.to(device)  # (T,)
-        old_lp_device = rollout.old_log_probs.to(device)  # (T,)
-        adv_device = advantages.to(device)  # (T,)
-        ret_device = returns.to(device)  # (T,)
-
-        T = rollout.length
+        T = group.total_timesteps
         epoch_total: list[float] = []
         epoch_policy: list[float] = []
-        epoch_value: list[float] = []
         epoch_entropy: list[float] = []
 
-        for _ppo_epoch in range(config.training.ppo_epochs):
+        for _epoch in range(config.training.update_epochs):
             indices = torch.randperm(T)
             for start in range(0, T, config.training.minibatch_size):
                 mb_idx = indices[start : start + config.training.minibatch_size]
@@ -330,21 +305,17 @@ def train(config: Config) -> None:
                 mb_actions = actions_device[mb_idx]  # (MB,)
                 mb_old_lp = old_lp_device[mb_idx]  # (MB,)
                 mb_adv = adv_device[mb_idx]  # (MB,)
-                mb_ret = ret_device[mb_idx]  # (MB,)
 
-                dist, new_values = policy(mb_obs)
+                dist = policy(mb_obs)
                 new_log_probs = dist.log_prob(mb_actions)  # (MB,)
                 entropy = dist.entropy()  # (MB,)
 
-                total, p_loss, v_loss, ent = ppo_loss(
+                total, p_loss, ent = grpo_loss(
                     old_log_probs=mb_old_lp,
                     new_log_probs=new_log_probs,
                     advantages=mb_adv,
-                    new_values=new_values,
-                    returns=mb_ret,
                     entropy=entropy,
                     clip_epsilon=config.training.clip_epsilon,
-                    value_loss_coeff=config.training.value_loss_coeff,
                     entropy_coeff=config.training.entropy_coeff,
                 )
 
@@ -355,67 +326,67 @@ def train(config: Config) -> None:
 
                 epoch_total.append(total.item())
                 epoch_policy.append(p_loss.item())
-                epoch_value.append(v_loss.item())
                 epoch_entropy.append(ent.item())
 
-        running_reward = (
-            rollout.episode_return if episode == 0 else 0.05 * rollout.episode_return + 0.95 * running_reward
-        )
-
-        avg_total = sum(epoch_total) / len(epoch_total)
-        avg_policy = sum(epoch_policy) / len(epoch_policy)
-        avg_value = sum(epoch_value) / len(epoch_value)
-        avg_entropy = sum(epoch_entropy) / len(epoch_entropy)
+        group_returns = torch.tensor(group.episode_returns)
+        group_mean = group_returns.mean().item()
+        group_std = group_returns.std().item()
+        running_reward = group_mean if group_idx == 0 else 0.05 * group_mean + 0.95 * running_reward
 
         metrics = StepMetrics(
-            episode=episode,
-            episode_return=rollout.episode_return,
+            group=group_idx,
+            group_mean_return=group_mean,
+            group_std_return=group_std,
+            group_min_return=min(group.episode_returns),
+            group_max_return=max(group.episode_returns),
             running_reward=running_reward,
-            episode_length=rollout.length,
-            loss=avg_total,
-            policy_loss=avg_policy,
-            value_loss=avg_value,
-            entropy=avg_entropy,
+            mean_episode_length=group.total_timesteps / config.training.group_size,
+            total_timesteps=group.total_timesteps,
+            loss=sum(epoch_total) / len(epoch_total),
+            policy_loss=sum(epoch_policy) / len(epoch_policy),
+            entropy=sum(epoch_entropy) / len(epoch_entropy),
             elapsed_sec=time.time() - t_start,
         )
         metrics_log.append(metrics)
 
-        if episode % config.training.log_interval == 0:
+        if group_idx % config.training.log_interval == 0:
             print(
-                f"[Episode {episode:>5d}] "
-                f"return={metrics.episode_return:>7.1f}  "
+                f"[Group {group_idx:>4d}] "
+                f"mean_ret={metrics.group_mean_return:>7.1f}  "
                 f"running={metrics.running_reward:>7.1f}  "
-                f"length={metrics.episode_length:>4d}  "
+                f"std={metrics.group_std_return:>5.2f}  "
+                f"min={metrics.group_min_return:>5.1f}  "
+                f"max={metrics.group_max_return:>5.1f}  "
                 f"loss={metrics.loss:>8.4f}  "
-                f"p_loss={metrics.policy_loss:>8.4f}  "
-                f"v_loss={metrics.value_loss:>8.4f}  "
                 f"entropy={metrics.entropy:>6.4f}  "
                 f"t={metrics.elapsed_sec:>6.1f}s"
             )
             wandb.log(
                 {
-                    "episode_return": metrics.episode_return,
+                    "group_mean_return": metrics.group_mean_return,
+                    "group_std_return": metrics.group_std_return,
+                    "group_min_return": metrics.group_min_return,
+                    "group_max_return": metrics.group_max_return,
                     "running_reward": metrics.running_reward,
-                    "episode_length": metrics.episode_length,
+                    "mean_episode_length": metrics.mean_episode_length,
                     "loss": metrics.loss,
                     "policy_loss": metrics.policy_loss,
-                    "value_loss": metrics.value_loss,
                     "entropy": metrics.entropy,
                 },
-                step=metrics.episode,
+                step=total_episodes,
             )
 
         if (
             config.training.checkpoint_interval > 0
-            and episode > 0
-            and episode % config.training.checkpoint_interval == 0
+            and group_idx > 0
+            and group_idx % config.training.checkpoint_interval == 0
         ):
-            path = os.path.join(model_dir, f"checkpoint_{episode}.pt")
-            torch.save({"model": policy.state_dict(), "optimizer": optimizer.state_dict(), "episode": episode}, path)
+            path = os.path.join(model_dir, f"checkpoint_{group_idx}.pt")
+            torch.save({"model": policy.state_dict(), "optimizer": optimizer.state_dict(), "group": group_idx}, path)
             print(f"  → saved {path}")
 
     final_path = os.path.join(model_dir, "checkpoint_final.pt")
-    torch.save({"model": policy.state_dict(), "optimizer": optimizer.state_dict(), "episode": episode}, final_path)
+    torch.save({"model": policy.state_dict(), "optimizer": optimizer.state_dict(), "group": group_idx}, final_path)
     print(f"  → saved {final_path}")
 
     metrics_path = os.path.join(model_dir, "metrics.jsonl")

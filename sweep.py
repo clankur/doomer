@@ -15,11 +15,10 @@ from pathlib import Path
 ABBREVS: dict[str, str] = {
     "learning_rate": "lr",
     "entropy_coeff": "ec",
-    "value_loss_coeff": "vc",
     "clip_epsilon": "clip",
-    "gae_lambda": "lam",
-    "ppo_epochs": "epochs",
+    "update_epochs": "epochs",
     "minibatch_size": "mb",
+    "group_size": "grp",
 }
 
 
