@@ -9,6 +9,7 @@ env:
   frame_stack: 4
   resolution: 84
   max_episode_steps: 300
+  dense_reward: true
 
 training:
   learning_rate: 5.e-4
