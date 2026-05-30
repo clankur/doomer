@@ -14,3 +14,4 @@ training:
   log_interval: 5
   checkpoint_interval: 25
   seed: 0
+  ppo_epochs: 2

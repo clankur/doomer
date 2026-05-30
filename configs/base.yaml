@@ -12,6 +12,12 @@ training:
   log_interval: 10
   checkpoint_interval: 500
   seed: 42
+  clip_epsilon: 0.2
+  value_loss_coeff: 0.5
+  entropy_coeff: 0.01
+  gae_lambda: 0.95
+  ppo_epochs: 4
+  minibatch_size: 64
 
 paths:
   root_working_dir: "/tmp"
