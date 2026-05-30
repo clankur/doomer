@@ -17,13 +17,19 @@ import runq
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 from einops import rearrange
 from omegaconf import DictConfig, OmegaConf
 
-import wandb
 from doom_env import EnvConfig, make_env
 
 # ─── Config dataclasses ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    cnn_channels: tuple[int, ...] = (32, 64, 64)
+    hidden_dim: int = 512
 
 
 @dataclass(frozen=True)
@@ -52,6 +58,7 @@ class Paths:
 @dataclass(frozen=True)
 class Config:
     env: EnvConfig = None
+    model: ModelConfig = None
     training: TrainingHparams = None
     paths: Paths = None
 
@@ -59,6 +66,7 @@ class Config:
 def build_config(cfg: DictConfig) -> Config:
     return Config(
         env=EnvConfig(**cfg.env),
+        model=ModelConfig(cnn_channels=tuple(cfg.model.cnn_channels), hidden_dim=cfg.model.hidden_dim),
         training=TrainingHparams(**cfg.training),
         paths=Paths(**cfg.paths),
     )
@@ -68,31 +76,35 @@ def build_config(cfg: DictConfig) -> Config:
 
 
 class ActorCriticNetwork(nn.Module):
-    """Nature DQN CNN backbone + policy and value heads.
+    """Configurable CNN backbone + policy and value heads.
 
     Input: (B, frame_stack, H, W) float32 in [0, 1]
     Output: (Categorical distribution over actions, value estimates)
     """
 
-    def __init__(self, frame_stack: int, num_actions: int, resolution: int = 84):
+    def __init__(self, frame_stack: int, num_actions: int, model_config: ModelConfig, resolution: int = 84):
         super().__init__()
-        self.conv1 = nn.Conv2d(frame_stack, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        # Build conv layers: first=8x8/4, second=4x4/2, remaining=3x3/1
+        kernel_strides = [(8, 4), (4, 2)] + [(3, 1)] * (len(model_config.cnn_channels) - 2)
+        in_channels = frame_stack
+        conv_layers: list[nn.Conv2d] = []
+        for out_channels, (kernel, stride) in zip(model_config.cnn_channels, kernel_strides):
+            conv_layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=kernel, stride=stride))
+            in_channels = out_channels
+        self.conv_layers = nn.ModuleList(conv_layers)
 
         with torch.no_grad():
             dummy = torch.zeros(1, frame_stack, resolution, resolution)
             conv_out = self._conv_forward(dummy)
-            conv_flat = conv_out.numel()
+            conv_flat: int = conv_out.numel()
 
-        self.fc = nn.Linear(conv_flat, 512)
-        self.policy_head = nn.Linear(512, num_actions)
-        self.value_head = nn.Linear(512, 1)
+        self.fc = nn.Linear(conv_flat, model_config.hidden_dim)
+        self.policy_head = nn.Linear(model_config.hidden_dim, num_actions)
+        self.value_head = nn.Linear(model_config.hidden_dim, 1)
 
     def _conv_forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
+        for conv in self.conv_layers:
+            x = F.relu(conv(x))
         return x
 
     def forward(self, x: torch.Tensor) -> tuple[torch.distributions.Categorical, torch.Tensor]:
@@ -274,6 +286,7 @@ def train(config: Config) -> None:
     policy = ActorCriticNetwork(
         frame_stack=config.env.frame_stack,
         num_actions=num_actions,
+        model_config=config.model,
         resolution=config.env.resolution,
     ).to(device)
 

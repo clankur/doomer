@@ -1,0 +1,27 @@
+# uv run python -m train --config-name=nav_large_cnn ++paths.model_name=nav_large_cnn_001
+defaults:
+  - base
+  - _self_
+
+env:
+  scenario: "VizdoomMyWayHome-v1"
+  frame_skip: 4
+  frame_stack: 4
+  resolution: 84
+  max_episode_steps: 2100
+
+model:
+  cnn_channels: [32, 64, 128, 128]
+  hidden_dim: 1024
+
+training:
+  learning_rate: 2.5e-4
+  gamma: 0.99
+  max_episodes: 10000
+  log_interval: 25
+  checkpoint_interval: 1000
+  seed: 42
+  entropy_coeff: 0.01
+  ppo_epochs: 4
+  minibatch_size: 64
+  max_grad_norm: 0.5
