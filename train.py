@@ -1,4 +1,4 @@
-"""Doom RL training: actor-critic network, PPO with GAE, Hydra entrypoint.
+"""Doom RL training: actor-critic network (CNN or LSTM), PPO with GAE, Hydra entrypoint.
 
 Usage:
     uv run python -m train --config-name=local_test ++paths.model_name=smoke_000
@@ -17,13 +17,24 @@ import runq
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 from einops import rearrange
 from omegaconf import DictConfig, OmegaConf
 
-import wandb
 from doom_env import EnvConfig, make_env
 
 # ─── Config dataclasses ─────────────────────────────────────────────────────
+
+# Type alias for LSTM hidden state: (h, c) each of shape (num_layers, batch, hidden_dim)
+LSTMHidden = tuple[torch.Tensor, torch.Tensor]
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    arch: str = "cnn"
+    cnn_channels: tuple[int, ...] = (32, 64, 64)
+    hidden_dim: int = 512
+    lstm_layers: int = 1
 
 
 @dataclass(frozen=True)
@@ -52,6 +63,7 @@ class Paths:
 @dataclass(frozen=True)
 class Config:
     env: EnvConfig = None
+    model: ModelConfig = None
     training: TrainingHparams = None
     paths: Paths = None
 
@@ -59,12 +71,45 @@ class Config:
 def build_config(cfg: DictConfig) -> Config:
     return Config(
         env=EnvConfig(**cfg.env),
+        model=ModelConfig(
+            arch=cfg.model.arch,
+            cnn_channels=tuple(cfg.model.cnn_channels),
+            hidden_dim=cfg.model.hidden_dim,
+            lstm_layers=cfg.model.lstm_layers,
+        ),
         training=TrainingHparams(**cfg.training),
         paths=Paths(**cfg.paths),
     )
 
 
 # ─── Network ────────────────────────────────────────────────────────────────
+
+
+def _build_conv_layers(in_channels: int, cnn_channels: tuple[int, ...]) -> nn.ModuleList:
+    """Build Nature DQN-style conv layers from channel spec.
+
+    Uses fixed kernel/stride pattern: 8x4, 4x2, 3x1 (matching Nature DQN).
+    """
+    kernel_strides = [(8, 4), (4, 2), (3, 1)]
+    layers = nn.ModuleList()
+    ch_in = in_channels
+    for ch_out, (kernel, stride) in zip(cnn_channels, kernel_strides):
+        layers.append(nn.Conv2d(ch_in, ch_out, kernel_size=kernel, stride=stride))
+        ch_in = ch_out
+    return layers
+
+
+def _conv_forward(layers: nn.ModuleList, x: torch.Tensor) -> torch.Tensor:
+    for layer in layers:
+        x = F.relu(layer(x))
+    return x
+
+
+def _compute_conv_output_size(conv_layers: nn.ModuleList, in_channels: int, resolution: int) -> int:
+    with torch.no_grad():
+        dummy = torch.zeros(1, in_channels, resolution, resolution)
+        out = _conv_forward(conv_layers, dummy)
+        return out.numel()
 
 
 class ActorCriticNetwork(nn.Module):
@@ -74,36 +119,103 @@ class ActorCriticNetwork(nn.Module):
     Output: (Categorical distribution over actions, value estimates)
     """
 
-    def __init__(self, frame_stack: int, num_actions: int, resolution: int = 84):
+    def __init__(self, model_config: ModelConfig, frame_stack: int, num_actions: int, resolution: int = 84):
         super().__init__()
-        self.conv1 = nn.Conv2d(frame_stack, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.conv_layers = _build_conv_layers(frame_stack, model_config.cnn_channels)
+        conv_flat = _compute_conv_output_size(self.conv_layers, frame_stack, resolution)
 
-        with torch.no_grad():
-            dummy = torch.zeros(1, frame_stack, resolution, resolution)
-            conv_out = self._conv_forward(dummy)
-            conv_flat = conv_out.numel()
-
-        self.fc = nn.Linear(conv_flat, 512)
-        self.policy_head = nn.Linear(512, num_actions)
-        self.value_head = nn.Linear(512, 1)
-
-    def _conv_forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        return x
+        self.fc = nn.Linear(conv_flat, model_config.hidden_dim)
+        self.policy_head = nn.Linear(model_config.hidden_dim, num_actions)
+        self.value_head = nn.Linear(model_config.hidden_dim, 1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.distributions.Categorical, torch.Tensor]:
         # x: (batch, frames, h, w)
-        x = self._conv_forward(x)  # -> (batch, channels, h', w')
+        x = _conv_forward(self.conv_layers, x)  # -> (batch, channels, h', w')
         x = rearrange(x, "batch channels h w -> batch (channels h w)")
         x = F.relu(self.fc(x))  # -> (batch, hidden)
         logits = self.policy_head(x)  # -> (batch, actions)
         value = self.value_head(x)  # -> (batch, 1)
         value = rearrange(value, "batch 1 -> batch")
         return torch.distributions.Categorical(logits=logits), value
+
+
+class LSTMActorCriticNetwork(nn.Module):
+    """CNN backbone + LSTM + policy and value heads.
+
+    Input: (B, frame_stack, H, W) float32 in [0, 1], plus LSTM hidden state
+    Output: (Categorical distribution, value estimate, new hidden state)
+    """
+
+    def __init__(self, model_config: ModelConfig, frame_stack: int, num_actions: int, resolution: int = 84):
+        super().__init__()
+        self.hidden_dim = model_config.hidden_dim
+        self.num_layers = model_config.lstm_layers
+
+        self.conv_layers = _build_conv_layers(frame_stack, model_config.cnn_channels)
+        conv_flat = _compute_conv_output_size(self.conv_layers, frame_stack, resolution)
+
+        self.lstm = nn.LSTM(
+            input_size=conv_flat,
+            hidden_size=model_config.hidden_dim,
+            num_layers=model_config.lstm_layers,
+            batch_first=True,
+        )
+        self.policy_head = nn.Linear(model_config.hidden_dim, num_actions)
+        self.value_head = nn.Linear(model_config.hidden_dim, 1)
+
+    def init_hidden(self, batch_size: int, device: torch.device) -> LSTMHidden:
+        return (
+            torch.zeros(self.num_layers, batch_size, self.hidden_dim, device=device),
+            torch.zeros(self.num_layers, batch_size, self.hidden_dim, device=device),
+        )
+
+    def forward(
+        self, x: torch.Tensor, hidden: LSTMHidden
+    ) -> tuple[torch.distributions.Categorical, torch.Tensor, LSTMHidden]:
+        # x: (batch, frames, h, w) — single timestep
+        x = _conv_forward(self.conv_layers, x)  # -> (batch, channels, h', w')
+        x = rearrange(x, "batch channels h w -> batch (channels h w)")
+
+        # LSTM expects (batch, seq_len, features) with batch_first=True
+        x = rearrange(x, "batch features -> batch 1 features")
+        lstm_out, new_hidden = self.lstm(x, hidden)  # -> (batch, 1, hidden_dim)
+        x = rearrange(lstm_out, "batch 1 hidden -> batch hidden")
+
+        logits = self.policy_head(x)  # -> (batch, actions)
+        value = self.value_head(x)  # -> (batch, 1)
+        value = rearrange(value, "batch 1 -> batch")
+        return torch.distributions.Categorical(logits=logits), value, new_hidden
+
+    def forward_sequence(
+        self, x: torch.Tensor, hidden: LSTMHidden
+    ) -> tuple[torch.distributions.Categorical, torch.Tensor, LSTMHidden]:
+        """Forward pass over a full sequence for PPO updates.
+
+        x: (batch, seq_len, frames, h, w)
+        Returns distributions and values for all timesteps at once.
+        """
+        batch_size, seq_len = x.shape[0], x.shape[1]
+
+        # Process all frames through CNN in one batch
+        x = rearrange(x, "batch seq frames h w -> (batch seq) frames h w")
+        x = _conv_forward(self.conv_layers, x)  # -> (batch*seq, channels, h', w')
+        x = rearrange(x, "bs channels h w -> bs (channels h w)")
+        x = rearrange(x, "(batch seq) features -> batch seq features", batch=batch_size, seq=seq_len)
+
+        lstm_out, new_hidden = self.lstm(x, hidden)  # -> (batch, seq, hidden_dim)
+        lstm_out = rearrange(lstm_out, "batch seq hidden -> (batch seq) hidden")
+
+        logits = self.policy_head(lstm_out)  # -> (batch*seq, actions)
+        value = self.value_head(lstm_out)  # -> (batch*seq, 1)
+
+        logits = rearrange(logits, "(batch seq) actions -> batch seq actions", batch=batch_size, seq=seq_len)
+        value = rearrange(value, "(batch seq) 1 -> batch seq", batch=batch_size, seq=seq_len)
+
+        # Squeeze batch dim since we always have batch=1 for episode processing
+        logits = rearrange(logits, "1 seq actions -> seq actions")
+        value = rearrange(value, "1 seq -> seq")
+
+        return torch.distributions.Categorical(logits=logits), value, new_hidden
 
 
 # ─── Rollout collection & PPO loss ─────────────────────────────────────────
@@ -122,7 +234,7 @@ class RolloutData:
 
 
 def collect_rollout(env: gymnasium.Env, policy: ActorCriticNetwork, device: torch.device) -> RolloutData:
-    """Roll out one full episode, collecting everything PPO needs."""
+    """Roll out one full episode with CNN policy, collecting everything PPO needs."""
     obs, _ = env.reset()
     obs_list: list[np.ndarray] = []
     action_list: list[int] = []
@@ -154,6 +266,62 @@ def collect_rollout(env: gymnasium.Env, policy: ActorCriticNetwork, device: torc
         obs_t = rearrange(torch.from_numpy(np.array(obs)), "frames h w -> 1 frames h w").to(device)
         with torch.no_grad():
             _, last_val = policy(obs_t)
+        last_value = last_val.item()
+    else:
+        last_value = 0.0
+
+    observations = torch.stack([torch.from_numpy(o) for o in obs_list])  # (T, frames, H, W)
+    actions = torch.tensor(action_list, dtype=torch.long)  # (T,)
+    old_log_probs = rearrange(torch.stack(log_prob_list), "t 1 -> t")  # (T,)
+    values = rearrange(torch.stack(value_list), "t 1 -> t")  # (T,)
+
+    return RolloutData(
+        observations=observations,
+        actions=actions,
+        old_log_probs=old_log_probs,
+        rewards=reward_list,
+        values=values,
+        last_value=last_value,
+        episode_return=sum(reward_list),
+        length=len(reward_list),
+    )
+
+
+def collect_rollout_lstm(env: gymnasium.Env, policy: LSTMActorCriticNetwork, device: torch.device) -> RolloutData:
+    """Roll out one full episode with LSTM policy, threading hidden state through steps."""
+    obs, _ = env.reset()
+    hidden = policy.init_hidden(batch_size=1, device=device)
+
+    obs_list: list[np.ndarray] = []
+    action_list: list[int] = []
+    log_prob_list: list[torch.Tensor] = []
+    reward_list: list[float] = []
+    value_list: list[torch.Tensor] = []
+    terminated = False
+    truncated = False
+
+    while not (terminated or truncated):
+        obs_np = np.array(obs)
+        obs_list.append(obs_np)
+
+        obs_t = rearrange(torch.from_numpy(obs_np), "frames h w -> 1 frames h w").to(device)
+        with torch.no_grad():
+            dist, value, hidden = policy(obs_t, hidden)
+        action = dist.sample()  # -> (1,)
+        log_prob = dist.log_prob(action)  # -> (1,)
+
+        obs, reward, terminated, truncated, _ = env.step(action.item())
+
+        action_list.append(action.item())
+        log_prob_list.append(log_prob.cpu())
+        reward_list.append(float(reward))
+        value_list.append(value.cpu())
+
+    # V(s_T): 0 if truly terminal, critic estimate if truncated
+    if truncated and not terminated:
+        obs_t = rearrange(torch.from_numpy(np.array(obs)), "frames h w -> 1 frames h w").to(device)
+        with torch.no_grad():
+            _, last_val, _ = policy(obs_t, hidden)
         last_value = last_val.item()
     else:
         last_value = 0.0
@@ -264,6 +432,136 @@ def _report_wandb_url_to_runq(wandb_url: str) -> None:
         pass
 
 
+def _ppo_update_cnn(
+    policy: ActorCriticNetwork,
+    optimizer: torch.optim.Optimizer,
+    rollout: RolloutData,
+    advantages: torch.Tensor,
+    returns: torch.Tensor,
+    config: Config,
+    device: torch.device,
+) -> tuple[float, float, float, float]:
+    """PPO update with shuffled minibatches for CNN policy."""
+    obs_device = rollout.observations.to(device)  # (T, frames, H, W)
+    actions_device = rollout.actions.to(device)  # (T,)
+    old_lp_device = rollout.old_log_probs.to(device)  # (T,)
+    adv_device = advantages.to(device)  # (T,)
+    ret_device = returns.to(device)  # (T,)
+
+    T = rollout.length
+    epoch_total: list[float] = []
+    epoch_policy: list[float] = []
+    epoch_value: list[float] = []
+    epoch_entropy: list[float] = []
+
+    for _ppo_epoch in range(config.training.ppo_epochs):
+        indices = torch.randperm(T)
+        for start in range(0, T, config.training.minibatch_size):
+            mb_idx = indices[start : start + config.training.minibatch_size]
+
+            mb_obs = obs_device[mb_idx]  # (MB, frames, H, W)
+            mb_actions = actions_device[mb_idx]  # (MB,)
+            mb_old_lp = old_lp_device[mb_idx]  # (MB,)
+            mb_adv = adv_device[mb_idx]  # (MB,)
+            mb_ret = ret_device[mb_idx]  # (MB,)
+
+            dist, new_values = policy(mb_obs)
+            new_log_probs = dist.log_prob(mb_actions)  # (MB,)
+            entropy = dist.entropy()  # (MB,)
+
+            total, p_loss, v_loss, ent = ppo_loss(
+                old_log_probs=mb_old_lp,
+                new_log_probs=new_log_probs,
+                advantages=mb_adv,
+                new_values=new_values,
+                returns=mb_ret,
+                entropy=entropy,
+                clip_epsilon=config.training.clip_epsilon,
+                value_loss_coeff=config.training.value_loss_coeff,
+                entropy_coeff=config.training.entropy_coeff,
+            )
+
+            optimizer.zero_grad()
+            total.backward()
+            nn.utils.clip_grad_norm_(policy.parameters(), config.training.max_grad_norm)
+            optimizer.step()
+
+            epoch_total.append(total.item())
+            epoch_policy.append(p_loss.item())
+            epoch_value.append(v_loss.item())
+            epoch_entropy.append(ent.item())
+
+    return (
+        sum(epoch_total) / len(epoch_total),
+        sum(epoch_policy) / len(epoch_policy),
+        sum(epoch_value) / len(epoch_value),
+        sum(epoch_entropy) / len(epoch_entropy),
+    )
+
+
+def _ppo_update_lstm(
+    policy: LSTMActorCriticNetwork,
+    optimizer: torch.optim.Optimizer,
+    rollout: RolloutData,
+    advantages: torch.Tensor,
+    returns: torch.Tensor,
+    config: Config,
+    device: torch.device,
+) -> tuple[float, float, float, float]:
+    """PPO update for LSTM policy — processes full episode in order to preserve temporal dependencies."""
+    obs_device = rollout.observations.to(device)  # (T, frames, H, W)
+    actions_device = rollout.actions.to(device)  # (T,)
+    old_lp_device = rollout.old_log_probs.to(device)  # (T,)
+    adv_device = advantages.to(device)  # (T,)
+    ret_device = returns.to(device)  # (T,)
+
+    # Add batch dim: (1, T, frames, H, W)
+    obs_seq = rearrange(obs_device, "t frames h w -> 1 t frames h w")
+
+    epoch_total: list[float] = []
+    epoch_policy: list[float] = []
+    epoch_value: list[float] = []
+    epoch_entropy: list[float] = []
+
+    for _ppo_epoch in range(config.training.ppo_epochs):
+        # Each epoch re-processes the full sequence from zero hidden state
+        hidden = policy.init_hidden(batch_size=1, device=device)
+        dist, new_values, _ = policy.forward_sequence(obs_seq, hidden)
+        # dist covers all T steps, new_values: (T,)
+
+        new_log_probs = dist.log_prob(actions_device)  # (T,)
+        entropy = dist.entropy()  # (T,)
+
+        total, p_loss, v_loss, ent = ppo_loss(
+            old_log_probs=old_lp_device,
+            new_log_probs=new_log_probs,
+            advantages=adv_device,
+            new_values=new_values,
+            returns=ret_device,
+            entropy=entropy,
+            clip_epsilon=config.training.clip_epsilon,
+            value_loss_coeff=config.training.value_loss_coeff,
+            entropy_coeff=config.training.entropy_coeff,
+        )
+
+        optimizer.zero_grad()
+        total.backward()
+        nn.utils.clip_grad_norm_(policy.parameters(), config.training.max_grad_norm)
+        optimizer.step()
+
+        epoch_total.append(total.item())
+        epoch_policy.append(p_loss.item())
+        epoch_value.append(v_loss.item())
+        epoch_entropy.append(ent.item())
+
+    return (
+        sum(epoch_total) / len(epoch_total),
+        sum(epoch_policy) / len(epoch_policy),
+        sum(epoch_value) / len(epoch_value),
+        sum(epoch_entropy) / len(epoch_entropy),
+    )
+
+
 def train(config: Config) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(config.training.seed)
@@ -271,11 +569,22 @@ def train(config: Config) -> None:
     env = make_env(config.env, seed=config.training.seed)
     num_actions = env.action_space.n
 
-    policy = ActorCriticNetwork(
-        frame_stack=config.env.frame_stack,
-        num_actions=num_actions,
-        resolution=config.env.resolution,
-    ).to(device)
+    use_lstm = config.model.arch == "lstm"
+
+    if use_lstm:
+        policy: nn.Module = LSTMActorCriticNetwork(
+            model_config=config.model,
+            frame_stack=config.env.frame_stack,
+            num_actions=num_actions,
+            resolution=config.env.resolution,
+        ).to(device)
+    else:
+        policy = ActorCriticNetwork(
+            model_config=config.model,
+            frame_stack=config.env.frame_stack,
+            num_actions=num_actions,
+            resolution=config.env.resolution,
+        ).to(device)
 
     optimizer = torch.optim.Adam(policy.parameters(), lr=config.training.learning_rate)
 
@@ -294,7 +603,10 @@ def train(config: Config) -> None:
     t_start = time.time()
 
     for episode in range(config.training.max_episodes):
-        rollout = collect_rollout(env, policy, device)
+        if use_lstm:
+            rollout = collect_rollout_lstm(env, policy, device)
+        else:
+            rollout = collect_rollout(env, policy, device)
 
         advantages, returns = compute_gae(
             rollout.rewards,
@@ -309,63 +621,18 @@ def train(config: Config) -> None:
         if returns.std() > 1e-8:
             returns = (returns - returns.mean()) / returns.std()
 
-        obs_device = rollout.observations.to(device)  # (T, frames, H, W)
-        actions_device = rollout.actions.to(device)  # (T,)
-        old_lp_device = rollout.old_log_probs.to(device)  # (T,)
-        adv_device = advantages.to(device)  # (T,)
-        ret_device = returns.to(device)  # (T,)
-
-        T = rollout.length
-        epoch_total: list[float] = []
-        epoch_policy: list[float] = []
-        epoch_value: list[float] = []
-        epoch_entropy: list[float] = []
-
-        for _ppo_epoch in range(config.training.ppo_epochs):
-            indices = torch.randperm(T)
-            for start in range(0, T, config.training.minibatch_size):
-                mb_idx = indices[start : start + config.training.minibatch_size]
-
-                mb_obs = obs_device[mb_idx]  # (MB, frames, H, W)
-                mb_actions = actions_device[mb_idx]  # (MB,)
-                mb_old_lp = old_lp_device[mb_idx]  # (MB,)
-                mb_adv = adv_device[mb_idx]  # (MB,)
-                mb_ret = ret_device[mb_idx]  # (MB,)
-
-                dist, new_values = policy(mb_obs)
-                new_log_probs = dist.log_prob(mb_actions)  # (MB,)
-                entropy = dist.entropy()  # (MB,)
-
-                total, p_loss, v_loss, ent = ppo_loss(
-                    old_log_probs=mb_old_lp,
-                    new_log_probs=new_log_probs,
-                    advantages=mb_adv,
-                    new_values=new_values,
-                    returns=mb_ret,
-                    entropy=entropy,
-                    clip_epsilon=config.training.clip_epsilon,
-                    value_loss_coeff=config.training.value_loss_coeff,
-                    entropy_coeff=config.training.entropy_coeff,
-                )
-
-                optimizer.zero_grad()
-                total.backward()
-                nn.utils.clip_grad_norm_(policy.parameters(), config.training.max_grad_norm)
-                optimizer.step()
-
-                epoch_total.append(total.item())
-                epoch_policy.append(p_loss.item())
-                epoch_value.append(v_loss.item())
-                epoch_entropy.append(ent.item())
+        if use_lstm:
+            avg_total, avg_policy, avg_value, avg_entropy = _ppo_update_lstm(
+                policy, optimizer, rollout, advantages, returns, config, device
+            )
+        else:
+            avg_total, avg_policy, avg_value, avg_entropy = _ppo_update_cnn(
+                policy, optimizer, rollout, advantages, returns, config, device
+            )
 
         running_reward = (
             rollout.episode_return if episode == 0 else 0.05 * rollout.episode_return + 0.95 * running_reward
         )
-
-        avg_total = sum(epoch_total) / len(epoch_total)
-        avg_policy = sum(epoch_policy) / len(epoch_policy)
-        avg_value = sum(epoch_value) / len(epoch_value)
-        avg_entropy = sum(epoch_entropy) / len(epoch_entropy)
 
         metrics = StepMetrics(
             episode=episode,

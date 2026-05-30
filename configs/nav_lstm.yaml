@@ -1,0 +1,29 @@
+# uv run python -m train --config-name=nav_lstm ++paths.model_name=nav_lstm_001
+defaults:
+  - base
+  - _self_
+
+env:
+  scenario: "VizdoomMyWayHome-v1"
+  frame_skip: 4
+  frame_stack: 1  # LSTM handles temporal info, no need for frame stacking
+  resolution: 84
+  max_episode_steps: 2100
+
+model:
+  arch: "lstm"
+  cnn_channels: [32, 64, 64]
+  hidden_dim: 256
+  lstm_layers: 1
+
+training:
+  learning_rate: 2.5e-4
+  gamma: 0.99
+  max_episodes: 10000
+  log_interval: 25
+  checkpoint_interval: 1000
+  seed: 42
+  entropy_coeff: 0.01
+  ppo_epochs: 4
+  minibatch_size: 64
+  max_grad_norm: 0.5
