@@ -1,0 +1,18 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "experiments"
+  navbar:
+    left:
+      - text: "Home"
+        href: index.qmd
+
+format:
+  html:
+    toc: true
+    code-fold: true
+    theme:
+      light: cosmo
+      dark: [cosmo, theme-dark.scss]

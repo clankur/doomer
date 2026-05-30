@@ -1,0 +1,44 @@
+/*-- scss:defaults --*/
+
+$body-bg: #1a1a2e;
+$body-color: #e0e0e0;
+$link-color: #6ea8fe;
+$link-hover-color: #9ec5fe;
+
+$navbar-bg: $body-bg;
+$navbar-fg: $body-color;
+$footer-bg: $body-bg;
+$footer-fg: $body-color;
+
+$card-bg: #1f1f38;
+$card-border-color: #2a2a4a;
+
+$code-bg: #16213e;
+$code-color: #c9d1d9;
+
+$input-bg: #1f1f38;
+$input-border-color: #2a2a4a;
+$input-color: #e0e0e0;
+
+$table-bg: transparent;
+$table-border-color: #2a2a4a;
+$table-striped-bg: rgba(255, 255, 255, 0.03);
+
+$headings-color: #f0f0f0;
+
+/*-- scss:rules --*/
+
+.sidebar {
+  background-color: $navbar-bg;
+}
+
+pre.sourceCode {
+  background-color: $code-bg;
+  border: 1px solid $card-border-color;
+}
+
+.nav-tabs .nav-link.active {
+  background-color: $card-bg;
+  border-color: $card-border-color;
+  color: $body-color;
+}

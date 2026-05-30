@@ -79,11 +79,31 @@ Ruff config lives in `pyproject.toml` (line-length 120, py310, rules `E4,E7,E9,F
 
 There is no test suite. The local test config above is the smoke test.
 
+### Experiment reports (Quarto)
+
+Reports live in `docs/` as `.qmd` files. Each report is an executable document mixing markdown, LaTeX equations, and Python analysis code (pandas, plotly) that renders to an interactive HTML page.
+
+```
+quarto preview docs/   # live-reload dev server
+quarto render docs/    # build static site to docs/_site/
+```
+
+To add a new report: create `docs/<slug>.qmd`, then add a navbar entry in `docs/_quarto.yml` and a row in `docs/index.qmd`.
+
+Publish the site to GitHub Pages with:
+
+```
+quarto publish gh-pages
+```
+
+This renders locally, pushes to the `gh-pages` branch, and opens the deployed site.
+
 ## Architecture
 
 - `train.py` — Network architecture, algorithm (REINFORCE/PPO/GRPO), training loop, wandb logging, runq remote execution, Hydra entrypoint. The whole training step should be readable linearly in this file.
 - `doom_env.py` — ViZDoom Gymnasium wrapper with preprocessing (grayscale, resize, normalize, frame stack). Provides `make_env` and `make_vec_env` factories.
 - `configs/` — Hydra YAML configs. `base.yaml` is the schema; other configs inherit from it.
+- `docs/` — Quarto experiment reports (`.qmd` files). `_quarto.yml` configures the site; rendered HTML goes to `docs/_site/` (gitignored).
 
 ## Coding patterns in `train.py`
 
