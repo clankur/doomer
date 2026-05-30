@@ -81,6 +81,14 @@ There is no test suite. The local test config above is the smoke test.
 
 ### Experiment reports (Quarto)
 
+#### Style
+
+When writing reports use the matx style which is: concise, impersonal, declarative, no qualifiers, math where needed, tables for data, zero speculation that isn't backed by a measurement. Every section does exactly one thing. For example you can review this blog post to review the content: 
+[Future leakage in block-quantized attention](https://matx.com/research/leaky_quantization)
+
+
+#### Usage
+
 Reports live in `docs/` as `.qmd` files. Each report is an executable document mixing markdown, LaTeX equations, and Python analysis code (pandas, plotly) that renders to an interactive HTML page.
 
 ```

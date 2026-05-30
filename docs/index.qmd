@@ -6,3 +6,4 @@ Experiment reports from [doomer](https://github.com/clankur/doomer), a PyTorch R
 
 | Report | Summary |
 |--------|---------|
+| [GRPO vs PPO](grpo-vs-ppo.qmd) | GRPO fails on ViZDoom: 1/27 configs learned vs PPO's 6/6. |

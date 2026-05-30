@@ -8,6 +8,8 @@ website:
     left:
       - text: "Home"
         href: index.qmd
+      - text: "GRPO vs PPO"
+        href: grpo-vs-ppo.qmd
 
 format:
   html:
