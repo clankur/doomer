@@ -3,7 +3,8 @@ title: "GRPO vs PPO on ViZDoom"
 date: 2026-05-30
 ---
 
-GRPO (Group Relative Policy Optimization) replaces PPO's learned value function with a group-relative ranking: collect $N$ episodes, rank by return, assign each episode's advantage as $(R_i - \bar{R}) / \sigma_R$. This eliminates the critic but assigns the same advantage to every timestep in an episode. The question: does this work for classical RL?
+GRPO became the default for LLM RL by dropping PPO's critic in favor of a group-relative baseline: collect $N$ episodes, assign each the advantage $(R_i - \bar{R}) / \sigma_R$. 
+Having implemented PPO, the natural next question is whether that trade holds outside LLM post-training: does a critic-free baseline work in classical RL?
 
 30+ runs on VizdoomBasic-v1 (RTX 4090, 10k episodes each). Answer: no. One GRPO run learned out of 30+ tested, and that result was not reproducible — even re-running with the same seed failed under GPU nondeterminism.
 
@@ -181,7 +182,7 @@ display_df.style.apply(style_row, axis=1).hide(axis="index")
 
 Three structural problems, each confirmed by experiment:
 
-**1. No pretrained base model.** GRPO replaces the value function with a group ranking. In LLM fine-tuning, the pretrained model is competent, so ranking completions is meaningful. A randomly initialized CNN produces garbage trajectories. Ranking garbage against garbage yields no signal.
+**1. No pretrained base model.** GRPO replaces the value function with a group ranking. In LLM fine-tuning, the pretrained model is competent, so ranking completions is meaningful. A randomly initialized CNN produces garbage trajectories, yielding no signal.
 
 **2. Episode-level credit assignment.** A 300-step episode requires per-step credit assignment. GRPO assigns the same advantage $\hat{A}_i$ to every timestep in episode $i$. Step 1 (spawn) and step 280 (aiming at enemy) receive identical gradient. PPO's GAE computes per-step advantages via temporal differences:
 
@@ -222,6 +223,6 @@ The single success was a stochastic event: entropy happened to drop and stay low
 
 ## Conclusion
 
-PPO learned in 6/6 configurations. GRPO learned in 1/30+ runs, and that single success was not reproducible — not across different seeds, and not even with the same seed under GPU nondeterminism.
+PPO learned in 6/6 configurations. GRPO learned in 1/30+ runs, and that single success was not reproducible.
 
-GRPO is an LLM fine-tuning algorithm. Its design assumptions (competent base model, short sequences, verifiable rewards) do not hold in classical RL.
+The critic GRPO discards is exactly the component classical RL depends on: it supplies the per-step baseline that makes credit assignment over a 300-step episode tractable. GRPO's design assumptions (competent base model, short sequences, verifiable rewards) hold for LLM fine-tuning and not for a randomly initialized policy learning from sparse reward.
