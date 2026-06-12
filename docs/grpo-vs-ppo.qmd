@@ -5,7 +5,7 @@ date: 2026-05-30
 
 GRPO (Group Relative Policy Optimization) replaces PPO's learned value function with a group-relative ranking: collect $N$ episodes, rank by return, assign each episode's advantage as $(R_i - \bar{R}) / \sigma_R$. This eliminates the critic but assigns the same advantage to every timestep in an episode. The question: does this work for classical RL?
 
-30+ runs on VizdoomBasic-v1 (RTX 4090, 10k episodes each). Answer: no. One GRPO configuration learned out of 27 tested, and only after modifications that reimplemented most of what PPO provides natively.
+30+ runs on VizdoomBasic-v1 (RTX 4090, 10k episodes each). Answer: no. One GRPO run learned out of 30+ tested, and that result was not reproducible — even re-running with the same seed failed under GPU nondeterminism.
 
 ## Setup
 
@@ -24,12 +24,18 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+def ema(series: pd.Series, alpha: float = 0.9) -> pd.Series:
+    return series.ewm(alpha=alpha, adjust=False).mean()
+
 runs = {}
 for f in glob.glob("data/*.json"):
     with open(f) as fh:
         d = json.load(fh)
         df = pd.DataFrame(d["history"])
         df["episode"] = df["_step"]
+        for col in ["running_reward", "entropy", "loss"]:
+            if col in df.columns:
+                df[col] = ema(df[col])
         runs[d["label"]] = df
 ```
 
@@ -185,8 +191,37 @@ The return-to-go modification partially addresses this by computing $G_t = \sum_
 
 **3. Weak gradient signal.** After group-relative normalization (mean 0, std 1), the policy loss $-\mathbb{E}[\min(r_t \hat{A}_t, \text{clip}(r_t) \hat{A}_t)]$ averages near zero because positive and negative advantages cancel. Measured loss magnitude: $\approx 0.02$ (GRPO) vs $\approx 0.5$ (PPO). The value loss in PPO ($\|V_\theta(s_t) - G_t\|^2$) provides an additional gradient signal that stabilizes learning.
 
+## Seed reproducibility
+
+The single GRPO success (exp 103, lr=5e-4, ec=0.02, seed=42) was retested with 4 additional seeds, plus a repeat of the original seed=42 to test determinism under GPU nondeterminism.
+
+```{python}
+#| echo: false
+#| label: tbl-seeds
+#| tbl-cap: "Seed reproducibility test. Same hyperparameters as exp 103."
+
+seed_results = pd.DataFrame([
+    {"Exp": 103, "Seed": 42, "Note": "original", "Reward": 52.7, "Learned": True},
+    {"Exp": 117, "Seed": 0, "Note": "", "Reward": -170.4, "Learned": False},
+    {"Exp": 118, "Seed": 1, "Note": "cancelled g280", "Reward": -179.0, "Learned": False},
+    {"Exp": 120, "Seed": 42, "Note": "repeat", "Reward": -155.0, "Learned": False},
+])
+
+def style_seed(row):
+    if row["Learned"]:
+        return ["background-color: #dcfce7"] * len(row)
+    return [""] * len(row)
+
+seed_results["Reward"] = seed_results["Reward"].map(lambda x: f"{x:+.1f}")
+seed_results.style.apply(style_seed, axis=1).hide(axis="index")
+```
+
+0/3 new seeds learned. The repeat of seed=42 (exp 120) also failed — GPU nondeterminism (cuDNN algorithm selection, floating-point operation ordering) causes trajectory divergence even with identical seeds. Exp 120 briefly exhibited the same entropy-drop pattern as 103 (entropy fell to 0.73 at group 380) but reverted to 1.37 instead of sustaining the drop that triggered 103's learning.
+
+The single success was a stochastic event: entropy happened to drop and stay low at the right time, causing the policy to commit to a viable strategy. This is not a learnable signal — it is a random walk that occasionally crosses a threshold.
+
 ## Conclusion
 
-PPO learned in 6/6 configurations. GRPO learned in 1/27 configurations, requiring two modifications (per-step return-to-go, dense reward shaping) that partially reimplemented PPO's temporal credit assignment. The single GRPO success was not reproducible across nearby hyperparameters.
+PPO learned in 6/6 configurations. GRPO learned in 1/30+ runs, and that single success was not reproducible — not across different seeds, and not even with the same seed under GPU nondeterminism.
 
 GRPO is an LLM fine-tuning algorithm. Its design assumptions (competent base model, short sequences, verifiable rewards) do not hold in classical RL.
