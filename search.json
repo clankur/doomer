@@ -1,0 +1,72 @@
+[
+  {
+    "objectID": "grpo-vs-ppo.html",
+    "href": "grpo-vs-ppo.html",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "",
+    "text": "GRPO became the default for LLM RL by dropping PPO’s critic in favor of a group-relative baseline: collect \\(N\\) episodes, assign each the advantage \\((R_i - \\bar{R}) / \\sigma_R\\). Having implemented PPO, the natural next question is whether that trade holds outside LLM post-training: does a critic-free baseline work in classical RL?\n30+ runs on VizdoomBasic-v1 (RTX 4090, 10k episodes each). Answer: no. One GRPO run learned out of 30+ tested, and that result was not reproducible — even re-running with the same seed failed under GPU nondeterminism."
+  },
+  {
+    "objectID": "grpo-vs-ppo.html#setup",
+    "href": "grpo-vs-ppo.html#setup",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "Setup",
+    "text": "Setup\nEnvironment. VizdoomBasic-v1: kill one enemy in a small room. Discrete(3) actions (left, right, attack). 84x84 grayscale, 4-frame stack, 300 max steps, frame_skip=4.\nNetwork. Nature DQN CNN (3 conv layers, 512-dim FC). PPO adds a value head; GRPO removes it.\nPPO config. GAE (\\(\\lambda=0.95\\), \\(\\gamma=0.99\\)), clipped surrogate (\\(\\epsilon=0.2\\)), 4 PPO epochs, minibatch size 64.\nGRPO config. Group size \\(N=8\\), same clipped surrogate and minibatch structure, no value function."
+  },
+  {
+    "objectID": "grpo-vs-ppo.html#running-reward",
+    "href": "grpo-vs-ppo.html#running-reward",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "Running reward",
+    "text": "Running reward\nPPO reaches positive reward by episode ~2,500 across all six hyperparameter configurations. GRPO baseline (flat episode-level advantages) flatlines at \\(-160\\). The single GRPO success (combined modifications, lr=5e-4, ec=0.02) reaches +50 but requires 2x the episodes and was the only working configuration out of 27 tested.\n\n\n\n\n                            \n                                            \n\n\nFigure 1: Running reward vs episodes. PPO learns reliably; GRPO flatlines except for one configuration."
+  },
+  {
+    "objectID": "grpo-vs-ppo.html#entropy",
+    "href": "grpo-vs-ppo.html#entropy",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "Entropy",
+    "text": "Entropy\nPPO allows entropy to decay naturally as the policy converges. GRPO with low entropy coefficient (\\(\\leq 0.01\\)) collapses to near-zero entropy without learning. The successful GRPO run (ec=0.02) maintained entropy above 0.2 during its learning phase.\n\n\n\n\n                            \n                                            \n\n\nFigure 2: Policy entropy over training."
+  },
+  {
+    "objectID": "grpo-vs-ppo.html#loss-magnitude",
+    "href": "grpo-vs-ppo.html#loss-magnitude",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "Loss magnitude",
+    "text": "Loss magnitude\nPPO losses range from 0.1 to 1.0. GRPO losses sit at \\(\\approx -0.02\\), two orders of magnitude smaller. The normalized return-to-go advantages have mean zero and unit variance; when averaged over a minibatch, positive and negative advantages cancel, producing near-zero policy loss. The entropy bonus (\\(-c_e \\cdot H\\)) dominates, making total loss slightly negative.\n\n\n\n\n                            \n                                            \n\n\nFigure 3: Total loss. PPO operates at 10-100x the gradient magnitude of GRPO."
+  },
+  {
+    "objectID": "grpo-vs-ppo.html#experiment-grid",
+    "href": "grpo-vs-ppo.html#experiment-grid",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "Experiment grid",
+    "text": "Experiment grid\nFour GRPO variants tested, each with a hyperparameter sweep. Total: 30+ runs.\n\n\n\n\nTable 1: All completed and representative cancelled runs.\n\n\n\n\n\n\n\n\nAlgorithm\nVariant\nlr\nec\nReward\nLearned\n\n\n\n\nPPO\nstandard\n3e-4\n0.02\n+11.7\nTrue\n\n\nPPO\nstandard\n3e-4\n0.05\n+36.4\nTrue\n\n\nPPO\nstandard\n3e-4\n0.10\n+19.5\nTrue\n\n\nPPO\nstandard\n5e-4\n0.02\n+45.6\nTrue\n\n\nPPO\nstandard\n5e-4\n0.05\n+42.6\nTrue\n\n\nPPO\nstandard\n5e-4\n0.10\n+32.5\nTrue\n\n\nGRPO\nflat advantages\n1e-4\n0.01\n-160.0\nFalse\n\n\nGRPO\nflat advantages\n3e-4\n0.01\n-160.0\nFalse\n\n\nGRPO\nflat advantages\n1e-3\n0.01\n-160.0\nFalse\n\n\nGRPO\nreturn-to-go\n3e-4\n0.02\n-160.5\nFalse\n\n\nGRPO\ndense reward\n3e-4\n0.02\n-160.0\nFalse\n\n\nGRPO\nRTG + dense\n3e-4\n0.01\n-160.0\nFalse\n\n\nGRPO\nRTG + dense\n3e-4\n0.02\n-160.0\nFalse\n\n\nGRPO\nRTG + dense\n5e-4\n0.01\n-160.0\nFalse\n\n\nGRPO\nRTG + dense\n5e-4\n0.02\n+52.7\nTrue\n\n\nGRPO\nRTG + dense\n5e-4\n0.05\n-196.0\nFalse\n\n\nGRPO\nRTG + dense\n1e-3\n0.02\n-160.0\nFalse\n\n\nGRPO\nRTG + dense\n5e-4\n0.015\n-166.7\nFalse"
+  },
+  {
+    "objectID": "grpo-vs-ppo.html#why-grpo-fails-here",
+    "href": "grpo-vs-ppo.html#why-grpo-fails-here",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "Why GRPO fails here",
+    "text": "Why GRPO fails here\nThree structural problems, each confirmed by experiment:\n1. No pretrained base model. GRPO replaces the value function with a group ranking. In LLM fine-tuning, the pretrained model is competent, so ranking completions is meaningful. A randomly initialized CNN produces garbage trajectories, yielding no signal.\n2. Episode-level credit assignment. A 300-step episode requires per-step credit assignment. GRPO assigns the same advantage \\(\\hat{A}_i\\) to every timestep in episode \\(i\\). Step 1 (spawn) and step 280 (aiming at enemy) receive identical gradient. PPO’s GAE computes per-step advantages via temporal differences:\n\\[\\hat{A}_t = \\sum_{l=0}^{T-t} (\\gamma\\lambda)^l \\delta_{t+l}, \\quad \\delta_t = r_t + \\gamma V(s_{t+1}) - V(s_t)\\]\nThe return-to-go modification partially addresses this by computing \\(G_t = \\sum_{k=t}^{T} \\gamma^{k-t} r_k\\) per step. But without a learned baseline \\(V(s_t)\\), the advantages after normalization are dominated by noise.\n3. Weak gradient signal. After group-relative normalization (mean 0, std 1), the policy loss \\(-\\mathbb{E}[\\min(r_t \\hat{A}_t, \\text{clip}(r_t) \\hat{A}_t)]\\) averages near zero because positive and negative advantages cancel. Measured loss magnitude: \\(\\approx 0.02\\) (GRPO) vs \\(\\approx 0.5\\) (PPO). The value loss in PPO (\\(\\|V_\\theta(s_t) - G_t\\|^2\\)) provides an additional gradient signal that stabilizes learning."
+  },
+  {
+    "objectID": "grpo-vs-ppo.html#seed-reproducibility",
+    "href": "grpo-vs-ppo.html#seed-reproducibility",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "Seed reproducibility",
+    "text": "Seed reproducibility\nThe single GRPO success (exp 103, lr=5e-4, ec=0.02, seed=42) was retested with 4 additional seeds, plus a repeat of the original seed=42 to test determinism under GPU nondeterminism.\n\n\n\n\nTable 2: Seed reproducibility test. Same hyperparameters as exp 103.\n\n\n\n\n\n\n\n\nExp\nSeed\nNote\nReward\nLearned\n\n\n\n\n103\n42\noriginal\n+52.7\nTrue\n\n\n117\n0\n\n-170.4\nFalse\n\n\n118\n1\ncancelled g280\n-179.0\nFalse\n\n\n120\n42\nrepeat\n-155.0\nFalse\n\n\n\n\n\n\n\n\n0/3 new seeds learned. The repeat of seed=42 (exp 120) also failed — GPU nondeterminism (cuDNN algorithm selection, floating-point operation ordering) causes trajectory divergence even with identical seeds. Exp 120 briefly exhibited the same entropy-drop pattern as 103 (entropy fell to 0.73 at group 380) but reverted to 1.37 instead of sustaining the drop that triggered 103’s learning.\nThe single success was a stochastic event: entropy happened to drop and stay low at the right time, causing the policy to commit to a viable strategy. This is not a learnable signal — it is a random walk that occasionally crosses a threshold."
+  },
+  {
+    "objectID": "grpo-vs-ppo.html#conclusion",
+    "href": "grpo-vs-ppo.html#conclusion",
+    "title": "GRPO vs PPO on ViZDoom",
+    "section": "Conclusion",
+    "text": "Conclusion\nPPO learned in 6/6 configurations. GRPO learned in 1/30+ runs, and that single success was not reproducible.\nThe critic GRPO discards is exactly the component classical RL depends on: it supplies the per-step baseline that makes credit assignment over a 300-step episode tractable. GRPO’s design assumptions (competent base model, short sequences, verifiable rewards) hold for LLM fine-tuning and not for a randomly initialized policy learning from sparse reward."
+  },
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "RL experiment reports",
+    "section": "",
+    "text": "Experiment reports from doomer, a PyTorch RL training codebase using ViZDoom.\n\n\n\nReport\nSummary\n\n\n\n\nGRPO vs PPO\nGRPO fails on ViZDoom: 1/27 configs learned vs PPO’s 6/6."
+  }
+]
